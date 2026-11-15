@@ -1013,7 +1013,8 @@ router.get("/folders/share/:token/download", async (req, res) => {
 
 // Roommate authentication helper (Zero information leak to strangers)
 async function getAuthenticatedRoom(req: import("express").Request) {
-  const roomId = req.params.id;
+  const roomIdParam = req.params.id;
+  const roomId = Array.isArray(roomIdParam) ? roomIdParam[0] : roomIdParam;
   if (!roomId || roomId.includes("..")) return null;
 
   const headerToken = req.headers["x-room-token"] as string | undefined;
