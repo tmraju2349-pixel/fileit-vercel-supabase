@@ -3,7 +3,7 @@
   "installCommand": "npm install",
   "outputDirectory": "dist",
   "functions": {
-    "api/[...path].ts": {
+    "api/[...path].mjs": {
       "maxDuration": 10
     }
   },
