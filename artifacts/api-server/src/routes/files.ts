@@ -23,7 +23,7 @@ import {
   deleteFile,
   getStoredFileStream,
   createUploadUrl,
-} from "../lib/fileStorage";
+} from "../lib/fileStorage.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 const router = Router();

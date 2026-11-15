@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { filesTable, foldersTable } from "@workspace/db/schema";
 import { lt, eq, and } from "drizzle-orm";
-import { deleteFile as deleteStorageFile } from "./lib/fileStorage";
+import { deleteFile as deleteStorageFile } from "./lib/fileStorage.js";
 
 export async function cleanupExpiredFilesAndFolders() {
   const now = new Date();

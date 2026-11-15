@@ -8,7 +8,7 @@ import {
   isSupabaseStorageEnabled,
   serveFromSupabase,
   uploadToSupabase,
-} from "./supabaseStorage";
+} from "./supabaseStorage.js";
 
 const MIME_MAP: Record<string, string> = {
   ".png": "image/png",

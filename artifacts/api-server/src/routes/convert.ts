@@ -3,7 +3,7 @@ import { filesTable } from "@workspace/db/schema";
 import { db } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
-import { generateStoragePath, getStoredFileStream, uploadFile } from "../lib/fileStorage";
+import { generateStoragePath, getStoredFileStream, uploadFile } from "../lib/fileStorage.js";
 
 export const convertRouter = Router();
 
