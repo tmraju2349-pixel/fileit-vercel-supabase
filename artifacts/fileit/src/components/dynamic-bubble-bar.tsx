@@ -14,6 +14,7 @@ import {
   Layers,
   Clock,
   Minimize2,
+  Minus,
   FileCode,
   Play,
   Pause,
@@ -39,6 +40,8 @@ import {
   ShieldCheck,
   Send,
   Wifi,
+  ClipboardCheck,
+  Clipboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -54,6 +57,7 @@ import {
   type StoredRoom,
 } from "@/lib/rooms-storage";
 import { useP2PConnection } from "@/components/p2p-connection-context";
+import { FullscreenPreviewModal } from "@/components/fullscreen-preview-modal";
 
 export function DynamicBubbleBar() {
   const {
@@ -95,6 +99,9 @@ export function DynamicBubbleBar() {
     setIsIslandExpanded,
     islandTab,
     setIslandTab,
+    isIslandMinimizedToLine,
+    setIsIslandMinimizedToLine,
+    toggleIslandMinimizedToLine,
   } = useDynamicBubble();
 
   const [isDragOver, setIsDragOver] = useState(false);
@@ -114,6 +121,13 @@ export function DynamicBubbleBar() {
     latency: p2pLatency,
     disconnect: disconnectP2P,
     sendClipboardText,
+    pendingOsClipboardItem,
+    applyPendingClipboard,
+    dismissPendingClipboard,
+    latestRemoteClipboard,
+    autoClipboardSync,
+    setAutoClipboardSync,
+    syncLocalClipboardNow,
   } = useP2PConnection();
 
   const [activeRoom, setActiveRoom] = useState<StoredRoom | null>(() => getActiveRoom());
@@ -127,6 +141,152 @@ export function DynamicBubbleBar() {
       setStoredRoomsList(getStoredRooms());
     });
   }, []);
+
+  // Activity detection: true if active room, media playback, file transfer, peer connection, pending clipboard, or staged files
+  const isIslandActive = Boolean(
+    activeRoom ||
+    activeMedia ||
+    activeTransfer ||
+    connectedPeer ||
+    p2pState === "connected" ||
+    pendingOsClipboardItem ||
+    stagedFiles.length > 0 ||
+    activePreviewFile
+  );
+
+  const [isHovered, setIsHovered] = useState(false);
+  const [isFileDraggingOnPage, setIsFileDraggingOnPage] = useState(false);
+  const [isHoldingToMinimize, setIsHoldingToMinimize] = useState(false);
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const didTriggerLongPressRef = useRef(false);
+  const islandDragCounterRef = useRef(0);
+  const hoverExpandTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Wake Island from minimized-line whenever a file is dragged anywhere into the window
+  useEffect(() => {
+    const isFileDrag = (e: DragEvent) => {
+      const types = e.dataTransfer?.types ? Array.from(e.dataTransfer.types) : [];
+      return types.includes("Files") || (e.dataTransfer?.files?.length ?? 0) > 0;
+    };
+
+    const handleWindowDragEnter = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      setIsFileDraggingOnPage(true);
+      setIsIslandMinimizedToLine(false);
+    };
+
+    const handleWindowDragOver = (e: DragEvent) => {
+      if (!isFileDrag(e)) return;
+      setIsFileDraggingOnPage(true);
+      setIsIslandMinimizedToLine(false);
+    };
+
+    const clearAllDragStates = () => {
+      setIsFileDraggingOnPage(false);
+      setIsDragOver(false);
+      islandDragCounterRef.current = 0;
+      if (hoverExpandTimerRef.current) {
+        clearTimeout(hoverExpandTimerRef.current);
+        hoverExpandTimerRef.current = null;
+      }
+      window.dispatchEvent(new CustomEvent("fileit-island-drag-state", { detail: { isDragOver: false } }));
+    };
+
+    const handleWindowDragLeave = (e: DragEvent) => {
+      if (e.clientX <= 0 && e.clientY <= 0) {
+        clearAllDragStates();
+      }
+    };
+
+    window.addEventListener("dragenter", handleWindowDragEnter);
+    window.addEventListener("dragover", handleWindowDragOver);
+    window.addEventListener("dragleave", handleWindowDragLeave);
+    window.addEventListener("drop", clearAllDragStates);
+    window.addEventListener("dragend", clearAllDragStates);
+    window.addEventListener("blur", clearAllDragStates);
+
+    return () => {
+      window.removeEventListener("dragenter", handleWindowDragEnter);
+      window.removeEventListener("dragover", handleWindowDragOver);
+      window.removeEventListener("dragleave", handleWindowDragLeave);
+      window.removeEventListener("drop", clearAllDragStates);
+      window.removeEventListener("dragend", clearAllDragStates);
+      window.removeEventListener("blur", clearAllDragStates);
+    };
+  }, [setIsIslandMinimizedToLine]);
+
+  // Auto-minimize into line after 5 seconds of inactivity
+  // Except when active (active room, media playing, active transfer, peer connected),
+  // or when expanded, hovered, or files are being dragged over.
+  useEffect(() => {
+    if (
+      isIslandMinimizedToLine ||
+      isIslandExpanded ||
+      isIslandActive ||
+      isHovered ||
+      isDragOver ||
+      isFileDraggingOnPage
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setIsIslandMinimizedToLine(true);
+    }, 5000);
+
+    return () => clearTimeout(timer);
+  }, [
+    isIslandMinimizedToLine,
+    isIslandExpanded,
+    isIslandActive,
+    isHovered,
+    isDragOver,
+    isFileDraggingOnPage,
+    setIsIslandMinimizedToLine,
+  ]);
+
+  // Long-press handler: Allows minimizing into a line at any time, even when active!
+  const startLongPress = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest("button, input, select, a")) {
+      return;
+    }
+    didTriggerLongPressRef.current = false;
+    setIsHoldingToMinimize(true);
+
+    longPressTimerRef.current = setTimeout(() => {
+      didTriggerLongPressRef.current = true;
+      setIsHoldingToMinimize(false);
+      setIsIslandExpanded(false);
+      setIsIslandMinimizedToLine(true);
+
+      if (typeof navigator !== "undefined" && navigator.vibrate) {
+        try {
+          navigator.vibrate([40, 30, 40]);
+        } catch {}
+      }
+
+      toast({
+        title: "Island Minimized to Line",
+        description: "Minimized via long press. Click the line at top to restore.",
+      });
+    }, 600);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    setIsHoldingToMinimize(false);
+  };
+
+  const handlePillClick = () => {
+    if (didTriggerLongPressRef.current) {
+      didTriggerLongPressRef.current = false;
+      return;
+    }
+    setIsIslandExpanded(true);
+  };
 
   // Auto-detect best tab when expanded if 'auto'
   const currentTab: IslandTab =
@@ -144,27 +304,79 @@ export function DynamicBubbleBar() {
       ? "shelf"
       : "files";
 
-  // Drag and drop event handlers
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
+  // Drag and drop event handlers directly on Fileit Island
+  const activateIslandDrag = () => {
     setIsDragOver(true);
+    if (isIslandMinimizedToLine) {
+      setIsIslandMinimizedToLine(false);
+    }
+    window.dispatchEvent(new CustomEvent("fileit-island-drag-state", { detail: { isDragOver: true } }));
+
+    if (!isIslandExpanded && !hoverExpandTimerRef.current) {
+      hoverExpandTimerRef.current = setTimeout(() => {
+        hoverExpandTimerRef.current = null;
+        setIslandTab("shelf");
+        setIsIslandExpanded(true);
+      }, 320);
+    }
+  };
+
+  const isReactFileDrag = (e: React.DragEvent) => {
+    const types = e.dataTransfer?.types ? Array.from(e.dataTransfer.types) : [];
+    return types.includes("Files") || (e.dataTransfer?.files?.length ?? 0) > 0;
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (!isReactFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    islandDragCounterRef.current++;
+    activateIslandDrag();
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!isReactFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    if (!isDragOver) {
+      activateIslandDrag();
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
-    setIsDragOver(false);
+    e.stopPropagation();
+    islandDragCounterRef.current--;
+    if (islandDragCounterRef.current <= 0) {
+      islandDragCounterRef.current = 0;
+      setIsDragOver(false);
+      if (hoverExpandTimerRef.current) {
+        clearTimeout(hoverExpandTimerRef.current);
+        hoverExpandTimerRef.current = null;
+      }
+      window.dispatchEvent(new CustomEvent("fileit-island-drag-state", { detail: { isDragOver: false } }));
+    }
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
+    islandDragCounterRef.current = 0;
     setIsDragOver(false);
+    setIsFileDraggingOnPage(false);
+    if (hoverExpandTimerRef.current) {
+      clearTimeout(hoverExpandTimerRef.current);
+      hoverExpandTimerRef.current = null;
+    }
+    window.dispatchEvent(new CustomEvent("fileit-island-drag-state", { detail: { isDragOver: false } }));
+    window.dispatchEvent(new CustomEvent("fileit-drag-cleanup"));
+
     const dropped = Array.from(e.dataTransfer.files);
     if (dropped.length === 0) return;
 
-    // Check if single audio dropped -> play immediately
+    // Check if single audio dropped -> stage immediately
     if (dropped.length === 1 && (dropped[0].type.startsWith("audio/") || dropped[0].name.match(/\.(mp3|wav|ogg|m4a|aac|flac)$/i))) {
-      const audioUrl = URL.createObjectURL(dropped[0]);
-      useDynamicBubble;
       stageFile(dropped[0]);
       setIsIslandExpanded(true);
       setIslandTab("shelf");
@@ -253,8 +465,7 @@ export function DynamicBubbleBar() {
     (activeMedia ? 1 : 0) +
     (activeTransfer ? 1 : 0) +
     (connectedPeer ? 1 : 0) +
-    stagedFiles.length +
-    minimizedFiles.length;
+    stagedFiles.length;
 
   return (
     <>
@@ -276,39 +487,99 @@ export function DynamicBubbleBar() {
       {/* Dynamic Island Root Anchor (Positioned below the top navigation header) */}
       <div
         className="fixed top-[62px] md:top-[72px] left-1/2 -translate-x-1/2 z-[100000] pointer-events-none flex flex-col items-center w-full px-3 max-w-2xl"
+        onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         <AnimatePresence mode="wait">
-          {!isIslandExpanded ? (
+          {isIslandMinimizedToLine ? (
+            /* ── MINIMIZED TO ULTRA-SLEEK LINE ───────────────────────── */
+            <motion.div
+              key="minimized-line"
+              initial={{ y: -10, opacity: 0, scaleX: 0.6 }}
+              animate={{ y: 0, opacity: 1, scaleX: 1 }}
+              exit={{ y: -10, opacity: 0, scaleX: 0.6 }}
+              transition={{ type: "spring", stiffness: 450, damping: 28 }}
+              onClick={() => {
+                setIsIslandMinimizedToLine(false);
+                toast({ title: "Island Restored", description: "Fileit Island is back." });
+              }}
+              className="pointer-events-auto cursor-pointer group flex flex-col items-center py-2 px-6 select-none"
+              title="Click to restore Fileit Island"
+            >
+              <div
+                className="relative h-1.5 w-36 sm:w-48 rounded-full transition-all duration-300 flex items-center justify-center bg-white/70 dark:bg-zinc-400/70 group-hover:bg-primary shadow-[0_4px_14px_rgba(0,0,0,0.5)] group-hover:h-2.5 group-hover:w-56 group-hover:shadow-[0_0_18px_rgba(var(--primary),0.85)]"
+              >
+                {(activeTransfer || activeMedia || connectedPeer || activeRoom) && (
+                  <span
+                    className={`absolute w-1.5 h-1.5 rounded-full animate-ping ${
+                      activeTransfer
+                        ? "bg-primary"
+                        : activeMedia
+                        ? "bg-purple-400"
+                        : connectedPeer
+                        ? "bg-emerald-400"
+                        : "bg-cyan-400"
+                    }`}
+                  />
+                )}
+              </div>
+              <span className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 mt-1.5 text-[10px] font-mono tracking-tight text-white/95 bg-black/85 px-2.5 py-0.5 rounded-full border border-white/15 shadow-md pointer-events-none">
+                Island Minimized · Click to Restore
+              </span>
+            </motion.div>
+          ) : !isIslandExpanded ? (
             /* ── COMPACT ADAPTIVE PILL ────────────────────────────────── */
             <motion.div
               key="compact-pill"
               layoutId="dynamic-island-shell"
               initial={{ y: -20, opacity: 0, scale: 0.9 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
+              animate={{ y: 0, opacity: 1, scale: isHoldingToMinimize ? 0.94 : 1 }}
               exit={{ y: -20, opacity: 0, scale: 0.9 }}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setIsIslandExpanded(true)}
-              className={`pointer-events-auto cursor-pointer flex items-center justify-between gap-3 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.65)] border backdrop-blur-2xl transition-all duration-200 select-none ${
+              whileHover={{ scale: isHoldingToMinimize ? 0.94 : 1.02 }}
+              whileTap={{ scale: 0.96 }}
+              onPointerDown={startLongPress}
+              onPointerUp={cancelLongPress}
+              onPointerCancel={cancelLongPress}
+              onPointerLeave={cancelLongPress}
+              onMouseEnter={() => setIsHovered(true)}
+              onMouseLeave={() => {
+                setIsHovered(false);
+                cancelLongPress();
+              }}
+              onClick={handlePillClick}
+              title={
+                isIslandActive
+                  ? "Fileit Island (Active) · Long-press to minimize to line · Click to expand"
+                  : "Fileit Island · Auto-minimizes in 5s when idle · Long-press to minimize"
+              }
+              className={`pointer-events-auto cursor-pointer flex items-center justify-between gap-3 px-3.5 py-1.5 sm:px-4 sm:py-2 rounded-full border transition-all duration-200 select-none ${
+                isHoldingToMinimize ? "ring-2 ring-primary border-primary scale-95" : ""
+              } ${
                 isDragOver
-                  ? "bg-primary text-primary-foreground border-white/60 scale-105 ring-4 ring-primary/30"
+                  ? "bg-primary text-primary-foreground border-white/70 scale-105 ring-4 ring-primary/40 shadow-[0_0_42px_hsl(var(--primary)/0.85)] backdrop-blur-2xl"
+                  : isFileDraggingOnPage
+                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-primary/80 ring-2 ring-primary/35 shadow-[0_0_28px_hsl(var(--primary)/0.45)] backdrop-blur-2xl"
                   : activeTransfer
-                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-primary/50 ring-2 ring-primary/30"
+                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-primary/50 ring-2 ring-primary/30 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
                   : activeMedia
-                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-purple-500/50 ring-2 ring-purple-500/25"
+                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-purple-500/50 ring-2 ring-purple-500/25 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
                   : connectedPeer
-                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-emerald-500/40"
+                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-emerald-500/40 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
                   : activePreviewFile
-                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-white/20"
-                  : "bg-black/90 dark:bg-zinc-950/95 text-zinc-100 border-white/15 hover:border-white/30"
+                  ? "bg-black/95 dark:bg-zinc-950/98 text-white border-white/20 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
+                  : "bg-black/90 dark:bg-zinc-950/95 text-zinc-100 border-white/15 hover:border-white/30 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-2xl"
               }`}
             >
               {/* Contextual Left Glyph */}
               <div className="flex items-center gap-2 min-w-0">
-                {activeTransfer ? (
+                {isDragOver ? (
+                  /* Active Drop Activation Glyph */
+                  <div className="flex items-center justify-center w-6 h-6 rounded-full bg-white/20 text-white shrink-0">
+                    <Upload className="w-3.5 h-3.5 animate-bounce" />
+                  </div>
+                ) : activeTransfer ? (
                   /* Transfer Circular Gauge */
                   <div className="relative w-6 h-6 flex items-center justify-center shrink-0">
                     <svg className="w-6 h-6 -rotate-90" viewBox="0 0 36 36">
@@ -352,6 +623,11 @@ export function DynamicBubbleBar() {
                       }`}
                     />
                   </div>
+                ) : pendingOsClipboardItem ? (
+                  /* Pending OS Clipboard Write Indicator */
+                  <div className="flex items-center justify-center w-6 h-6 rounded-full bg-primary/20 text-primary shrink-0">
+                    <ClipboardCheck className="w-3.5 h-3.5" />
+                  </div>
                 ) : (connectedPeer || p2pState === "connected") ? (
                   /* P2P Live indicator */
                   <div className="relative flex items-center justify-center w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 shrink-0">
@@ -375,8 +651,35 @@ export function DynamicBubbleBar() {
                 )}
 
                 {/* Center Informational Text */}
-                <div className="flex flex-col text-left max-w-[150px] sm:max-w-[220px]">
-                  {activeTransfer ? (
+                <div className="flex flex-col text-left max-w-[165px] sm:max-w-[235px]">
+                  {isDragOver ? (
+                    <>
+                      <span className="text-[11px] font-bold text-white truncate leading-tight">
+                        Release to Drop in Island
+                      </span>
+                      <span className="text-[9px] text-white/85 truncate">
+                        Stage files for ZIP, QR or P2P
+                      </span>
+                    </>
+                  ) : isFileDraggingOnPage ? (
+                    <>
+                      <span className="text-[11px] font-bold text-white truncate leading-tight">
+                        Fileit Island Ready
+                      </span>
+                      <span className="text-[9px] text-zinc-300 truncate">
+                        Hover here to stage in Island
+                      </span>
+                    </>
+                  ) : pendingOsClipboardItem ? (
+                    <>
+                      <span className="text-[11px] font-bold text-white truncate leading-tight">
+                        Clipboard from {pendingOsClipboardItem.sourceDevice}
+                      </span>
+                      <span className="text-[9px] font-mono text-zinc-300 truncate">
+                        {pendingOsClipboardItem.content.slice(0, 28)}
+                      </span>
+                    </>
+                  ) : activeTransfer ? (
                     <>
                       <span className="text-[11px] font-bold text-white truncate leading-tight">
                         {activeTransfer.name}
@@ -402,7 +705,7 @@ export function DynamicBubbleBar() {
                         <span>{remoteDeviceName || connectedPeer?.name || "Peer Device"}</span>
                       </span>
                       <span className="text-[9px] font-mono text-emerald-400">
-                        P2P Linked {p2pLatency ? `· ${p2pLatency}ms` : ""}
+                        P2P {autoClipboardSync ? "· Auto-Clipboard" : ""}{p2pLatency ? ` · ${p2pLatency}ms` : ""}
                       </span>
                     </>
                   ) : activeRoom ? (
@@ -439,7 +742,33 @@ export function DynamicBubbleBar() {
 
               {/* Quick Inline Controls on Pill */}
               <div className="flex items-center gap-1.5 shrink-0 pl-1">
-                {activeMedia ? (
+                {pendingOsClipboardItem ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void applyPendingClipboard();
+                      }}
+                      className="px-2.5 h-6 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground text-[10px] font-semibold flex items-center gap-1 transition-colors whitespace-nowrap shrink-0"
+                      title="Write received text to OS clipboard"
+                    >
+                      <ClipboardCheck className="w-3 h-3" />
+                      <span>Apply</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        dismissPendingClipboard();
+                      }}
+                      className="w-5 h-5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors"
+                      title="Dismiss clipboard prompt"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </>
+                ) : activeMedia ? (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -463,25 +792,33 @@ export function DynamicBubbleBar() {
                   >
                     <X className="w-3 h-3" />
                   </button>
-                ) : activePreviewFile ? (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      addMinimizedFile(activePreviewFile);
-                      setActivePreviewFile(null);
-                    }}
-                    className="w-6 h-6 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 flex items-center justify-center"
-                    title="Minimize Document"
-                  >
-                    <Minimize2 className="w-3 h-3" />
-                  </button>
                 ) : (
                   <span className="flex h-2 w-2 relative">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                   </span>
                 )}
+
+                {/* Minimize Island to Line on Pill */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsIslandMinimizedToLine(true);
+                    toast({
+                      title: "Island Minimized to Line",
+                      description: "Click the line at top of screen to restore Fileit Island.",
+                    });
+                  }}
+                  className="w-6 h-6 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors"
+                  title={
+                    isIslandActive
+                      ? "Minimize Island to Line (or long-press anywhere)"
+                      : "Minimize Island to Line (auto-minimizes in 5s when idle)"
+                  }
+                >
+                  <Minus className="w-3.5 h-3.5" />
+                </button>
 
                 {totalBadgesCount > 0 && !activeMedia && !activeTransfer && (
                   <span className="px-1.5 py-0.2 text-[9px] font-mono font-bold rounded-full bg-primary/20 text-primary border border-primary/30">
@@ -496,10 +833,19 @@ export function DynamicBubbleBar() {
               key="expanded-hud"
               layoutId="dynamic-island-shell"
               initial={{ y: -10, opacity: 0, scale: 0.95 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
+              animate={{ y: 0, opacity: 1, scale: isHoldingToMinimize ? 0.96 : 1 }}
               exit={{ y: -10, opacity: 0, scale: 0.95 }}
               transition={{ type: "spring", stiffness: 380, damping: 28 }}
-              className="pointer-events-auto bg-black/95 dark:bg-zinc-950/98 text-white border border-white/20 rounded-3xl p-4 shadow-[0_25px_60px_rgba(0,0,0,0.8)] backdrop-blur-3xl w-full max-w-[440px] space-y-3.5 select-none"
+              onMouseEnter={() => setIsHovered(true)}
+              onMouseLeave={() => {
+                setIsHovered(false);
+                cancelLongPress();
+              }}
+              className={`pointer-events-auto text-white rounded-3xl p-4 w-full max-w-[440px] space-y-3.5 select-none transition-all duration-200 bg-black/95 dark:bg-zinc-950/98 border shadow-[0_25px_60px_rgba(0,0,0,0.8)] backdrop-blur-3xl ${
+                isDragOver
+                  ? "border-primary ring-4 ring-primary/35 shadow-[0_0_48px_hsl(var(--primary)/0.65)]"
+                  : "border-white/20"
+              }`}
             >
               {/* Header Navigation Tabs */}
               <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
@@ -584,23 +930,39 @@ export function DynamicBubbleBar() {
                     }`}
                   >
                     <Layers className="w-3 h-3" />
-                    <span>Files</span>
-                    {minimizedFiles.length > 0 && (
-                      <span className="text-[10px] font-mono px-1 rounded bg-white/20 text-white">
-                        {minimizedFiles.length}
-                      </span>
-                    )}
                   </button>
                 </div>
 
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => setIsIslandExpanded(false)}
-                  className="h-7 w-7 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 shrink-0"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </Button>
+                <div className="flex items-center gap-1 shrink-0">
+                  {/* Minimize Island to Line in HUD */}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => {
+                      setIsIslandExpanded(false);
+                      setIsIslandMinimizedToLine(true);
+                      toast({
+                        title: "Island Minimized to Line",
+                        description: "Click the line at top of screen to restore Fileit Island.",
+                      });
+                    }}
+                    className="h-7 w-7 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 shrink-0"
+                    title="Minimize Island to Line"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </Button>
+
+                  {/* Close HUD */}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setIsIslandExpanded(false)}
+                    className="h-7 w-7 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 shrink-0"
+                    title="Collapse HUD"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
               </div>
 
               {/* ── TAB CONTENT ─────────────────────────────────────────── */}
@@ -723,10 +1085,16 @@ export function DynamicBubbleBar() {
                   {/* Drop target prompt */}
                   <div
                     onClick={() => fileInputRef.current?.click()}
-                    className="p-3 rounded-2xl border border-dashed border-white/20 hover:border-primary/50 bg-white/5 hover:bg-white/10 cursor-pointer text-center transition-all group"
+                    className={`p-3 rounded-2xl border-2 border-dashed cursor-pointer text-center transition-all group ${
+                      isDragOver
+                        ? "border-primary bg-primary/20 ring-2 ring-primary/40 shadow-[0_0_24px_hsl(var(--primary)/0.45)]"
+                        : "border-white/20 hover:border-primary/50 bg-white/5 hover:bg-white/10"
+                    }`}
                   >
-                    <Upload className="w-4 h-4 mx-auto mb-1 text-primary group-hover:scale-110 transition-transform" />
-                    <span className="text-xs font-semibold text-white block">Drop or Click to Stage Files</span>
+                    <Upload className={`w-4 h-4 mx-auto mb-1 text-primary transition-transform ${isDragOver ? "scale-125 animate-bounce" : "group-hover:scale-110"}`} />
+                    <span className="text-xs font-semibold text-white block">
+                      {isDragOver ? "Release to Stage in Drop Shelf" : "Drop or Click to Stage Files"}
+                    </span>
                     <span className="text-[10px] text-zinc-400">
                       Creates instant bundles, QR codes, or P2P direct shares
                     </span>
@@ -838,69 +1206,19 @@ export function DynamicBubbleBar() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() => {
-                            addMinimizedFile(activePreviewFile);
-                            setActivePreviewFile(null);
-                          }}
-                          className="h-7 px-2 text-[10px] text-zinc-300 hover:text-white hover:bg-white/10 rounded-lg"
-                        >
-                          Minimize
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
                           onClick={() => setSplitScreenFile(activePreviewFile)}
                           className="h-7 px-2 text-[10px] text-purple-400 hover:text-purple-300 hover:bg-purple-500/15 rounded-lg"
                         >
-                          Split
+                          Split Screen
                         </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Minimized Files */}
-                  {minimizedFiles.length > 0 && (
-                    <div className="space-y-1.5">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1">
-                        <Minimize2 className="w-3 h-3" /> Minimized & Stashed ({minimizedFiles.length})
-                      </span>
-                      <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                        {minimizedFiles.map((file) => (
-                          <div
-                            key={file.id}
-                            className="flex items-center justify-between bg-zinc-900/90 border border-white/10 px-2.5 py-1.5 rounded-xl text-xs"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              {getFileCategoryIcon(file.type, file.name)}
-                              <span className="truncate text-zinc-200">{file.name}</span>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => restoreFile(file.id)}
-                                className="p-1 rounded text-zinc-400 hover:text-white"
-                                title="Restore"
-                              >
-                                <Maximize2 className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setSplitScreenFile(file)}
-                                className="p-1 rounded text-zinc-400 hover:text-purple-400"
-                                title="Split Screen"
-                              >
-                                <Columns className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => removeMinimizedFile(file.id)}
-                                className="p-1 rounded text-zinc-400 hover:text-red-400"
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          onClick={() => setActivePreviewFile(null)}
+                          className="h-7 w-7 text-zinc-400 hover:text-white rounded-lg"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -935,9 +1253,9 @@ export function DynamicBubbleBar() {
                     </div>
                   )}
 
-                  {minimizedFiles.length === 0 && recentFiles.length === 0 && !activePreviewFile && (
+                  {recentFiles.length === 0 && !activePreviewFile && (
                     <div className="py-6 text-center text-xs text-zinc-500">
-                      No files currently open or stashed.
+                      No recent files yet. Open any file to track history.
                     </div>
                   )}
                 </div>
@@ -1121,12 +1439,65 @@ export function DynamicBubbleBar() {
                         </Button>
                       </div>
 
-                      {/* Quick Beam Clipboard */}
+                      {/* Pending OS Clipboard Write Fallback */}
+                      {pendingOsClipboardItem && (
+                        <div className="p-2.5 rounded-2xl bg-primary/15 border border-primary/40 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="text-[10px] font-semibold text-primary block">
+                              Pending clipboard from {pendingOsClipboardItem.sourceDevice}
+                            </span>
+                            <p className="text-[11px] font-mono text-white truncate">
+                              {pendingOsClipboardItem.content}
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            onClick={() => void applyPendingClipboard()}
+                            className="h-7 px-2.5 rounded-lg text-[11px] font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shrink-0 gap-1"
+                          >
+                            <ClipboardCheck className="w-3 h-3" />
+                            <span>Apply</span>
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Auto-Clipboard Sync Status & Latest Item */}
                       <div className="p-2.5 rounded-2xl bg-white/5 border border-white/10 space-y-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
-                          Instant Beam Text / Link to Phone
-                        </span>
-                        <div className="flex gap-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold text-zinc-200 flex items-center gap-1.5">
+                            <Clipboard className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Auto-Clipboard Sync</span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void syncLocalClipboardNow("manual")}
+                              className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-white/10 hover:bg-white/20 text-zinc-200 transition-colors"
+                              title="Push current system clipboard to paired device"
+                            >
+                              Sync Now
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAutoClipboardSync(!autoClipboardSync)}
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-colors ${
+                                autoClipboardSync
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  : "bg-white/10 text-zinc-400"
+                              }`}
+                            >
+                              {autoClipboardSync ? "ON" : "PAUSED"}
+                            </button>
+                          </div>
+                        </div>
+
+                        {latestRemoteClipboard && (
+                          <div className="text-[10px] font-mono text-zinc-400 truncate">
+                            Latest: <span className="text-zinc-200">{latestRemoteClipboard.content}</span>
+                          </div>
+                        )}
+
+                        <div className="flex gap-1.5 pt-0.5">
                           <input
                             type="text"
                             value={fileBeamText}
@@ -1225,6 +1596,55 @@ export function DynamicBubbleBar() {
             </Button>
           </div>
         </div>
+      )}
+
+
+
+      {/* ── Global Active Preview Modal (When a file is restored or launched from Island) ── */}
+      {activePreviewFile && (
+        <FullscreenPreviewModal
+          isOpen={true}
+          onClose={() => setActivePreviewFile(null)}
+          fileName={activePreviewFile.name}
+          size={activePreviewFile.size}
+          url={activePreviewFile.url || ""}
+        >
+          {activePreviewFile.url ? (
+            activePreviewFile.type === "pdf" ? (
+              <iframe
+                src={activePreviewFile.url}
+                className="w-full h-full min-h-[550px] rounded-2xl border-0 shadow-inner"
+                title={activePreviewFile.name}
+              />
+            ) : activePreviewFile.type === "image" ? (
+              <img
+                src={activePreviewFile.url}
+                alt={activePreviewFile.name}
+                className="max-h-[80vh] max-w-full rounded-2xl object-contain shadow-md"
+              />
+            ) : (
+              <div className="text-center p-8 space-y-4">
+                <div className="w-16 h-16 rounded-3xl bg-primary/10 text-primary flex items-center justify-center mx-auto">
+                  {getFileCategoryIcon(activePreviewFile.type, activePreviewFile.name)}
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-foreground">{activePreviewFile.name}</h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {activePreviewFile.size ? formatBytes(activePreviewFile.size) : "Ready to view"}
+                  </p>
+                </div>
+                <Button asChild size="sm">
+                  <a href={activePreviewFile.url} download={activePreviewFile.name}>
+                    <Download className="w-4 h-4 mr-1.5" />
+                    Download File
+                  </a>
+                </Button>
+              </div>
+            )
+          ) : (
+            <p className="text-sm text-muted-foreground">Document loaded</p>
+          )}
+        </FullscreenPreviewModal>
       )}
     </>
   );

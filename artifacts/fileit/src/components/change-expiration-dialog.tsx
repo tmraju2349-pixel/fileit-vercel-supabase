@@ -99,10 +99,12 @@ export function ChangeExpirationDialog({ onClose }: ChangeExpirationDialogProps)
       queryClient.invalidateQueries({ queryKey: ["/api/folders"] });
       
       // Specifically invalidate rooms or dynamic endpoints if any
-      const activeRoomId = localStorage.getItem("fileit_active_room_id");
-      if (activeRoomId) {
-        queryClient.invalidateQueries({ queryKey: [`/api/rooms/${activeRoomId}`] });
-      }
+      try {
+        const activeRoomId = localStorage.getItem("fileit_active_room_id");
+        if (activeRoomId) {
+          queryClient.invalidateQueries({ queryKey: [`/api/rooms/${activeRoomId}`] });
+        }
+      } catch {}
 
       setIsOpen(false);
       setTarget(null);

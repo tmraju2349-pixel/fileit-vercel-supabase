@@ -59,13 +59,18 @@ export function getDeviceDetails() {
   else if (ua.includes("Firefox")) browser = "Firefox";
   else if (ua.includes("Edge")) browser = "Edge";
 
-  let mac = localStorage.getItem("fileit_device_mac");
+  let mac: string | null = null;
+  try {
+    mac = localStorage.getItem("fileit_device_mac");
+  } catch {}
   if (!mac) {
     const hex = "0123456789ABCDEF";
     mac = Array.from({ length: 6 }, () => 
       hex[Math.floor(Math.random() * 16)] + hex[Math.floor(Math.random() * 16)]
     ).join(":");
-    localStorage.setItem("fileit_device_mac", mac);
+    try {
+      localStorage.setItem("fileit_device_mac", mac);
+    } catch {}
   }
 
   const fingerprint = `FP-${Math.abs(ua.split("").reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0)).toString(16).toUpperCase()}`;

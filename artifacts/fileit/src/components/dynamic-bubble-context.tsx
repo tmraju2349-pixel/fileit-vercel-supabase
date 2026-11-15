@@ -102,6 +102,9 @@ interface DynamicBubbleContextType {
   setIsIslandExpanded: (expanded: boolean) => void;
   islandTab: IslandTab;
   setIslandTab: (tab: IslandTab) => void;
+  isIslandMinimizedToLine: boolean;
+  setIsIslandMinimizedToLine: (minimized: boolean) => void;
+  toggleIslandMinimizedToLine: () => void;
 }
 
 const DynamicBubbleContext = createContext<DynamicBubbleContextType | undefined>(undefined);
@@ -116,6 +119,23 @@ export function DynamicBubbleProvider({ children }: { children: React.ReactNode 
   // Island Presentation States
   const [isIslandExpanded, setIsIslandExpanded] = useState<boolean>(false);
   const [islandTab, setIslandTab] = useState<IslandTab>("auto");
+  const [isIslandMinimizedToLine, setIsIslandMinimizedToLine] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("fileit_island_minimized_line") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleIslandMinimizedToLine = useCallback(() => {
+    setIsIslandMinimizedToLine((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("fileit_island_minimized_line", String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   // Background Audio Engine
   const [activeMedia, setActiveMedia] = useState<ActiveMedia | null>(null);
@@ -426,6 +446,9 @@ export function DynamicBubbleProvider({ children }: { children: React.ReactNode 
         setIsIslandExpanded,
         islandTab,
         setIslandTab,
+        isIslandMinimizedToLine,
+        setIsIslandMinimizedToLine,
+        toggleIslandMinimizedToLine,
       }}
     >
       {children}

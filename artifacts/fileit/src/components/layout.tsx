@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { HardDrive, MessageSquareCode, ShieldCheck, ScanLine, Zap } from "lucide-react";
+import { HardDrive, MessageSquareCode, ShieldCheck, ScanLine, Zap, PlusCircle } from "lucide-react";
 import { FileitLogo } from "@/components/brand/FileitLogo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { getActiveRoom, subscribeToActiveRoom, type StoredRoom } from "@/lib/rooms-storage";
@@ -16,15 +16,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const isFilesActive = location === "/" || location === "/files";
-  const isTextActive = location === "/text";
+  const isHomeActive = location === "/" || location === "/home" || location === "/files";
+  const isAddActive = location === "/add" || location === "/text";
   const isRoomsActive = location.startsWith("/rooms");
   const isConnectivityActive = location === "/connectivity";
   const isQrActive = location === "/qr";
   const roomsHref = activeRoom ? `/rooms/${activeRoom.id}` : "/rooms";
 
+  const activeRoomName = activeRoom?.name || "Room";
   const roomLabel = activeRoom
-    ? `Room: ${activeRoom.name.length > 10 ? activeRoom.name.slice(0, 9) + "…" : activeRoom.name}`
+    ? `Room: ${activeRoomName.length > 10 ? activeRoomName.slice(0, 9) + "…" : activeRoomName}`
     : "Rooms";
 
   return (
@@ -46,27 +47,29 @@ export function Layout({ children }: { children: React.ReactNode }) {
             {/* Desktop Navigation (> md) */}
             <nav className="hidden md:flex items-center gap-1 bg-secondary/40 border border-border/60 p-1 rounded-2xl backdrop-blur-sm">
               <Link
-                href="/files"
+                href="/"
                 className={`flex items-center gap-2 text-sm font-medium transition-all px-3.5 py-1.5 rounded-xl ${
-                  isFilesActive
+                  isHomeActive
                     ? "bg-card text-foreground shadow-xs border border-border/60 font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
                 }`}
+                title="Home - Unified Vault (Files, Code & Notes)"
               >
-                <HardDrive className="w-4 h-4" />
-                <span>Files</span>
+                <HardDrive className="w-4 h-4 text-primary" />
+                <span>Home</span>
               </Link>
 
               <Link
-                href="/text"
+                href="/add"
                 className={`flex items-center gap-2 text-sm font-medium transition-all px-3.5 py-1.5 rounded-xl ${
-                  isTextActive
+                  isAddActive
                     ? "bg-card text-foreground shadow-xs border border-border/60 font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
                 }`}
+                title="Add - Note & Code Studio"
               >
-                <MessageSquareCode className="w-4 h-4" />
-                <span>Text & Code</span>
+                <PlusCircle className="w-4 h-4 text-primary" />
+                <span>Add</span>
               </Link>
 
               <Link
@@ -95,6 +98,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     ? "bg-card text-foreground shadow-xs border border-border/60 font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
                 }`}
+                title="Connectivity & Clipboard Sync"
               >
                 <Zap className="w-4 h-4" />
                 <span>Connectivity</span>
@@ -162,45 +166,45 @@ export function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile Bottom Navigation Bar (< md) */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 bg-background/90 backdrop-blur-xl border-t border-border/80 md:hidden safe-area-pb">
         <div className="grid grid-cols-4 h-16 max-w-lg mx-auto px-2">
-          {/* Files */}
+          {/* 1. Home */}
           <Link
-            href="/files"
+            href="/"
             className={`flex flex-col items-center justify-center gap-1 py-1 rounded-2xl transition-all ${
-              isFilesActive
+              isHomeActive
                 ? "text-primary font-bold"
                 : "text-muted-foreground hover:text-foreground font-medium"
             }`}
           >
             <div
               className={`w-9 h-7 flex items-center justify-center rounded-full transition-colors ${
-                isFilesActive ? "bg-primary/15 text-primary" : ""
+                isHomeActive ? "bg-primary/15 text-primary" : ""
               }`}
             >
               <HardDrive className="w-4 h-4" />
             </div>
-            <span className="text-[10px] leading-tight tracking-tight">Files</span>
+            <span className="text-[10px] leading-tight tracking-tight">Home</span>
           </Link>
 
-          {/* Text & Code */}
+          {/* 2. Add */}
           <Link
-            href="/text"
+            href="/add"
             className={`flex flex-col items-center justify-center gap-1 py-1 rounded-2xl transition-all ${
-              isTextActive
+              isAddActive
                 ? "text-primary font-bold"
                 : "text-muted-foreground hover:text-foreground font-medium"
             }`}
           >
             <div
               className={`w-9 h-7 flex items-center justify-center rounded-full transition-colors ${
-                isTextActive ? "bg-primary/15 text-primary" : ""
+                isAddActive ? "bg-primary/15 text-primary" : ""
               }`}
             >
-              <MessageSquareCode className="w-4 h-4" />
+              <PlusCircle className="w-4 h-4" />
             </div>
-            <span className="text-[10px] leading-tight tracking-tight">Text/Code</span>
+            <span className="text-[10px] leading-tight tracking-tight">Add</span>
           </Link>
 
-          {/* Private Rooms */}
+          {/* 3. Rooms */}
           <Link
             href={roomsHref}
             className={`flex flex-col items-center justify-center gap-1 py-1 rounded-2xl transition-all relative ${
@@ -222,7 +226,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <span className="text-[10px] leading-tight tracking-tight">Rooms</span>
           </Link>
 
-          {/* Connectivity / Phone Link */}
+          {/* 4. Connectivity */}
           <Link
             href="/connectivity"
             className={`flex flex-col items-center justify-center gap-1 py-1 rounded-2xl transition-all ${
@@ -238,7 +242,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <Zap className="w-4 h-4" />
             </div>
-            <span className="text-[10px] leading-tight tracking-tight">Link/P2P</span>
+            <span className="text-[10px] leading-tight tracking-tight">Sync/P2P</span>
           </Link>
         </div>
       </nav>

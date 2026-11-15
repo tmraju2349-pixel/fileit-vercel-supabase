@@ -26,7 +26,8 @@ const server = app.listen(port, "0.0.0.0", () => {
 server.on("error", (err: any) => {
   logger.error({ err }, "Server listen error encountered");
   if (err?.code === "EADDRINUSE") {
-    logger.warn({ port }, "Port already in use");
+    logger.warn({ port }, "Port already in use; exiting duplicate server instance");
+    process.exit(0);
   }
 });
 

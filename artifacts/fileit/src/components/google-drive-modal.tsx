@@ -8,23 +8,23 @@ import { initializeApp, getApps } from "firebase/app";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from "firebase/auth";
 
 const firebaseConfig = {
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "",
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+  projectId: "winter-sunbeam-bpthm",
+  appId: "1:301122214664:web:fd1c0baf616cff02872abd",
+  apiKey: "AIzaSyDJ2y51hxz1PxNGIHOrihqWycHfQj4-un8",
+  authDomain: "winter-sunbeam-bpthm.firebaseapp.com",
+  storageBucket: "winter-sunbeam-bpthm.firebasestorage.app",
+  messagingSenderId: "301122214664",
 };
 
-const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
-
-const app = isFirebaseConfigured
-  ? (getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0])
-  : null;
-const auth = app ? getAuth(app) : null;
-const provider = new GoogleAuthProvider();
-provider.addScope("https://www.googleapis.com/auth/drive.file");
-provider.addScope("https://www.googleapis.com/auth/drive.readonly");
+function getFirebaseAuth() {
+  try {
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    return getAuth(app);
+  } catch (err) {
+    console.warn("Firebase Auth unavailable in current environment:", err);
+    return null;
+  }
+}
 
 interface GoogleDriveFile {
   id: string;
@@ -53,24 +53,30 @@ export function GoogleDriveModal({ open, onOpenChange, onImportFile }: GoogleDri
   const { toast } = useToast();
 
   useEffect(() => {
+    if (!open) return;
+    const auth = getFirebaseAuth();
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
     });
     return () => unsubscribe();
-  }, []);
+  }, [open]);
 
   const handleSignIn = async () => {
+    const auth = getFirebaseAuth();
     if (!auth) {
       toast({
         variant: "destructive",
-        title: "Configuration Required",
-        description: "Google Drive integration requires Firebase credentials to be configured in your .env file.",
+        title: "Google Sign-In Unavailable",
+        description: "Browser storage is restricted in this environment.",
       });
       return;
     }
     try {
       setIsLoading(true);
+      const provider = new GoogleAuthProvider();
+      provider.addScope("https://www.googleapis.com/auth/drive.file");
+      provider.addScope("https://www.googleapis.com/auth/drive.readonly");
       const result = await signInWithPopup(auth, provider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential?.accessToken) {

@@ -22,9 +22,9 @@ const textFileExtensions: Record<string, string> = {
 };
 
 export function getTextMessageFilename(title: string, language: string): string {
-  const extension = textFileExtensions[language.toLowerCase()] || "txt";
+  const extension = textFileExtensions[(language || "plaintext").toLowerCase()] || "txt";
   const safeTitle =
-    title.replace(/[\\/]/g, "_").replace(/[^a-zA-Z0-9._ -]/g, "_").trim() || "snippet";
+    (title || "snippet").replace(/[\\/]/g, "_").replace(/[^a-zA-Z0-9._ -]/g, "_").trim() || "snippet";
   return safeTitle.toLowerCase().endsWith(`.${extension}`)
     ? safeTitle
     : `${safeTitle}.${extension}`;

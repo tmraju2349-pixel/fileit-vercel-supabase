@@ -6,6 +6,7 @@ import { P2PRadar } from "@/components/p2p-radar";
 import { QrPairModal } from "@/components/qr-pair-modal";
 import { FolderSyncExplorer } from "@/components/folder-sync-explorer";
 import { P2PFileBeam } from "@/components/p2p-file-beam";
+import { LiveClipboardBox } from "@/components/live-clipboard-box";
 import {
   Radio,
   FolderTree,
@@ -17,6 +18,7 @@ import {
   Laptop,
   Smartphone,
   CheckCircle2,
+  Copy,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -60,8 +62,9 @@ export default function ConnectivityPage() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-border/80 pb-5">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-foreground">
-                P2P Link & Folder Sync
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2">
+                <Zap className="w-7 h-7 text-primary" />
+                <span>Connectivity &amp; Clipboard Sync</span>
               </h1>
               {isConnected ? (
                 <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
@@ -75,7 +78,7 @@ export default function ConnectivityPage() {
               )}
             </div>
             <p className="text-xs sm:text-sm text-muted-foreground">
-              End-to-end encrypted direct WebRTC channel. Stays connected across all pages until you close the tab.
+              End-to-end encrypted direct WebRTC channel. Syncs clipboard automatically while open or on returning to this tab.
             </p>
           </div>
 
@@ -103,7 +106,7 @@ export default function ConnectivityPage() {
         </div>
 
         {/* Real-time Technical Metrics Strip (Zero-Pill Typography) */}
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs font-mono text-muted-foreground bg-card/40 p-3 rounded-2xl border border-border/60">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs font-mono text-muted-foreground bg-card/40 p-3 rounded-2xl border border-border/60 tabular-nums">
           <span className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-500" />
             <span className="text-foreground font-semibold">WebRTC DTLS-SRTP</span>
@@ -140,7 +143,7 @@ export default function ConnectivityPage() {
                 </div>
                 <div className="flex justify-between items-center text-muted-foreground font-mono">
                   <span>Session PIN:</span>
-                  <span className="font-bold text-foreground">{sessionCode}</span>
+                  <span className="font-bold text-foreground tabular-nums">{sessionCode}</span>
                 </div>
                 <div className="flex justify-between items-center text-muted-foreground font-mono">
                   <span>Cross-Navigation:</span>
@@ -150,15 +153,17 @@ export default function ConnectivityPage() {
             )}
           </div>
 
-          {/* Right Column: Remote Workspace (lg: 7 cols) */}
-          <div className="lg:col-span-7 space-y-4">
+          {/* Right Column: Live Shared Clipboard + Remote Workspace (lg: 7 cols) */}
+          <div className="lg:col-span-7 space-y-5">
+            <LiveClipboardBox />
+
             {/* Workspace View Switcher */}
             <div className="flex items-center justify-between bg-card/60 p-1.5 rounded-2xl border border-border/80">
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   onClick={() => setActiveWorkspaceTab("folders")}
-                  className={`px-3.5 py-1.5 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors ${
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                     activeWorkspaceTab === "folders"
                       ? "bg-card text-foreground shadow-xs border border-border/60"
                       : "text-muted-foreground hover:text-foreground"
@@ -171,14 +176,14 @@ export default function ConnectivityPage() {
                 <button
                   type="button"
                   onClick={() => setActiveWorkspaceTab("beam")}
-                  className={`px-3.5 py-1.5 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors ${
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                     activeWorkspaceTab === "beam"
                       ? "bg-card text-foreground shadow-xs border border-border/60"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   <UploadCloud className="w-3.5 h-3.5 text-primary" />
-                  <span>Direct File Beam & Clipboard</span>
+                  <span>Direct File Beam</span>
                 </button>
               </div>
             </div>
@@ -186,7 +191,7 @@ export default function ConnectivityPage() {
             {/* Tab 1: Bi-Directional Folder Sync */}
             {activeWorkspaceTab === "folders" && <FolderSyncExplorer />}
 
-            {/* Tab 2: Direct File Beam & Real Clipboard */}
+            {/* Tab 2: Direct File Beam */}
             {activeWorkspaceTab === "beam" && <P2PFileBeam />}
           </div>
         </div>

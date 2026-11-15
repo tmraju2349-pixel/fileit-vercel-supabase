@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { useToast } from "@/hooks/use-toast";
 import { useDynamicBubble } from "@/components/dynamic-bubble-context";
 
+export type ClipboardPermissionState = "granted" | "prompt" | "denied" | "unsupported";
+
 export interface SyncedClipboardItem {
   id: string;
   type: "text" | "link" | "image";
@@ -9,6 +11,8 @@ export interface SyncedClipboardItem {
   timestamp: number;
   sourceDevice: string;
   hash: string;
+  direction?: "sent" | "received";
+  appliedToOs?: boolean;
 }
 
 export interface VaultFile {
@@ -50,8 +54,19 @@ interface P2PConnectionContextType {
   sendDataChannelMessage: (msg: any) => boolean;
 
   syncedClipboard: SyncedClipboardItem[];
+  latestRemoteClipboard: SyncedClipboardItem | null;
+  pendingOsClipboardItem: SyncedClipboardItem | null;
+  lastClipboardSyncAt: number | null;
+  clipboardPermissionState: ClipboardPermissionState;
   sendClipboardText: (text: string) => void;
   clearClipboard: () => void;
+  autoClipboardSync: boolean;
+  setAutoClipboardSync: (enabled: boolean) => void;
+  pasteFromSystemClipboard: () => Promise<void>;
+  syncLocalClipboardNow: (origin?: "copy" | "focus" | "poll" | "manual") => Promise<boolean>;
+  requestClipboardPermission: () => Promise<boolean>;
+  applyPendingClipboard: () => Promise<boolean>;
+  dismissPendingClipboard: () => void;
 
   remoteVaultFiles: VaultFile[];
   localVaultFiles: VaultFile[];
@@ -92,9 +107,48 @@ function getDeviceName(): string {
   return "Connected Device";
 }
 
+function hashClipboardText(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + ((i + 1) & 0xff);
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${(h1 >>> 0).toString(36)}_${(h2 >>> 0).toString(36)}_${input.length}`;
+}
+
+function getSelectedTextFallback(): string {
+  if (typeof document === "undefined") return "";
+  try {
+    const active = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+    if (
+      active &&
+      (active.tagName === "TEXTAREA" || active.tagName === "INPUT") &&
+      typeof active.selectionStart === "number" &&
+      typeof active.selectionEnd === "number" &&
+      active.selectionEnd > active.selectionStart
+    ) {
+      return active.value.slice(active.selectionStart, active.selectionEnd);
+    }
+    const sel = window.getSelection()?.toString();
+    return sel || "";
+  } catch {
+    return "";
+  }
+}
+
 export function P2PConnectionProvider({ children }: { children: React.ReactNode }) {
   const { toast } = useToast();
-  const { setConnectedPeer, startTransfer, updateTransferProgress, completeTransfer } = useDynamicBubble();
+  const {
+    setConnectedPeer,
+    setIsIslandMinimizedToLine,
+    startTransfer,
+    updateTransferProgress,
+    completeTransfer,
+  } = useDynamicBubble();
 
   const [p2pState, setP2PState] = useState<P2PState>("idle");
   const [connectionRole, setConnectionRole] = useState<"initiator" | "receiver" | null>(null);
@@ -105,6 +159,31 @@ export function P2PConnectionProvider({ children }: { children: React.ReactNode 
   const [logs, setLogs] = useState<string[]>([]);
 
   const [syncedClipboard, setSyncedClipboard] = useState<SyncedClipboardItem[]>([]);
+  const [latestRemoteClipboard, setLatestRemoteClipboard] = useState<SyncedClipboardItem | null>(null);
+  const [pendingOsClipboardItem, setPendingOsClipboardItem] = useState<SyncedClipboardItem | null>(null);
+  const [lastClipboardSyncAt, setLastClipboardSyncAt] = useState<number | null>(null);
+  const [clipboardPermissionState, setClipboardPermissionState] = useState<ClipboardPermissionState>("prompt");
+  const [autoClipboardSync, setAutoClipboardSyncState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("fileit_auto_clipboard_sync");
+      return saved === null ? true : saved === "true";
+    } catch {
+      return true;
+    }
+  });
+  const setAutoClipboardSync = useCallback((enabled: boolean) => {
+    setAutoClipboardSyncState(enabled);
+    try {
+      localStorage.setItem("fileit_auto_clipboard_sync", String(enabled));
+    } catch {}
+  }, []);
+  const autoClipboardSyncRef = useRef<boolean>(autoClipboardSync);
+  useEffect(() => {
+    autoClipboardSyncRef.current = autoClipboardSync;
+  }, [autoClipboardSync]);
+
+  const lastProcessedHashRef = useRef<string>("");
+  const lastBroadcastedTextRef = useRef<string>("");
   const [remoteVaultFiles, setRemoteVaultFiles] = useState<VaultFile[]>([]);
   const [localVaultFiles, setLocalVaultFiles] = useState<VaultFile[]>([]);
   const [receivedItems, setReceivedItems] = useState<ReceivedItem[]>([]);
@@ -277,15 +356,69 @@ export function P2PConnectionProvider({ children }: { children: React.ReactNode 
         }
 
         // Clipboard Sync Item Received
-        if (msg.type === "CLIPBOARD_SYNC") {
+        if (msg.type === "CLIPBOARD_SYNC" && msg.item && typeof msg.item.content === "string" && msg.item.content.trim()) {
+          const cleanContent = msg.item.content.trim();
+          const computedHash = hashClipboardText(cleanContent);
+          if (computedHash === lastProcessedHashRef.current && cleanContent === lastBroadcastedTextRef.current) {
+            return;
+          }
+
+          lastProcessedHashRef.current = computedHash;
+          lastBroadcastedTextRef.current = cleanContent;
+
+          const receivedItem: SyncedClipboardItem = {
+            id: msg.item.id || `clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+            type: /^https?:\/\//i.test(cleanContent) ? "link" : msg.item.type || "text",
+            content: cleanContent,
+            timestamp: msg.item.timestamp || Date.now(),
+            sourceDevice: msg.item.sourceDevice || "Paired Device",
+            hash: computedHash,
+            direction: "received",
+            appliedToOs: false,
+          };
+
+          setLatestRemoteClipboard(receivedItem);
+          setLastClipboardSyncAt(Date.now());
           setSyncedClipboard((prev) => {
-            if (prev.some((item) => item.hash === msg.item.hash)) return prev;
-            return [msg.item, ...prev];
+            const filtered = prev.filter((existing) => existing.hash !== computedHash);
+            return [receivedItem, ...filtered].slice(0, 25);
           });
-          toast({
-            title: "Clipboard Synced from Phone",
-            description: msg.item.content.length > 50 ? msg.item.content.slice(0, 50) + "..." : msg.item.content,
-          });
+
+          const tryWriteToOs = async () => {
+            if (!autoClipboardSyncRef.current) return;
+            if (typeof navigator === "undefined" || !navigator?.clipboard?.writeText) {
+              setPendingOsClipboardItem(receivedItem);
+              setIsIslandMinimizedToLine(false);
+              return;
+            }
+            if (typeof document !== "undefined" && (document.visibilityState !== "visible" || !document.hasFocus())) {
+              setPendingOsClipboardItem(receivedItem);
+              setIsIslandMinimizedToLine(false);
+              return;
+            }
+            try {
+              await navigator.clipboard.writeText(cleanContent);
+              const appliedItem = { ...receivedItem, appliedToOs: true };
+              setPendingOsClipboardItem(null);
+              setLatestRemoteClipboard(appliedItem);
+              setSyncedClipboard((prev) =>
+                prev.map((entry) => (entry.id === receivedItem.id ? { ...entry, appliedToOs: true } : entry))
+              );
+              toast({
+                title: `Copied from ${receivedItem.sourceDevice}`,
+                description: `${cleanContent.length > 55 ? cleanContent.slice(0, 55) + "..." : cleanContent} · Ready to paste`,
+              });
+            } catch {
+              setPendingOsClipboardItem(receivedItem);
+              setIsIslandMinimizedToLine(false);
+              toast({
+                title: `Clipboard ready from ${receivedItem.sourceDevice}`,
+                description: "Switch to this tab or tap Apply in Fileit Island to write to OS clipboard.",
+              });
+            }
+          };
+
+          void tryWriteToOs();
           return;
         }
 
@@ -321,7 +454,7 @@ export function P2PConnectionProvider({ children }: { children: React.ReactNode 
         console.warn("Failed to parse DataChannel message:", err);
       }
     };
-  }, [addLog, toast, localVaultFiles, sendDataChannelMessage, startTransfer, updateTransferProgress, completeTransfer]);
+  }, [addLog, toast, localVaultFiles, sendDataChannelMessage, startTransfer, updateTransferProgress, completeTransfer, setIsIslandMinimizedToLine]);
 
   // Clean Disconnect (Only when explicitly called or tab closed!)
   const disconnect = useCallback(() => {
@@ -524,25 +657,302 @@ export function P2PConnectionProvider({ children }: { children: React.ReactNode 
     }
   }, [enteredCode, disconnect, addLog, setupDataChannelEvents, toast]);
 
-  // ── Clipboard Sync ─────────────────────────────────────────────────────────
-  const sendClipboardText = useCallback((text: string) => {
-    if (!text.trim()) return;
-    const item: SyncedClipboardItem = {
-      id: Math.random().toString(36).substring(2, 9),
-      type: /^https?:\/\//i.test(text.trim()) ? "link" : "text",
-      content: text.trim(),
-      timestamp: Date.now(),
-      sourceDevice: getDeviceName(),
-      hash: btoa(text.trim().slice(0, 32)),
+  // ── Monitor Browser Clipboard Read Permission ───────────────────────────────
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      setClipboardPermissionState("unsupported");
+      return;
+    }
+
+    let permStatus: PermissionStatus | null = null;
+    let active = true;
+
+    const checkPerm = async () => {
+      if (!navigator.permissions?.query) return;
+      try {
+        const status = await navigator.permissions.query({ name: "clipboard-read" as PermissionName });
+        if (!active) return;
+        permStatus = status;
+        setClipboardPermissionState(status.state as ClipboardPermissionState);
+        status.onchange = () => {
+          if (active) {
+            setClipboardPermissionState(status.state as ClipboardPermissionState);
+          }
+        };
+      } catch {
+        // Safari/Firefox may not expose clipboard-read in Permissions API
+      }
     };
 
-    setSyncedClipboard((prev) => [item, ...prev]);
+    void checkPerm();
+    return () => {
+      active = false;
+      if (permStatus) permStatus.onchange = null;
+    };
+  }, []);
+
+  // ── Clipboard Sync & Bi-Directional Auto-Pairing ──────────────────────────
+  const sendClipboardText = useCallback((text: string) => {
+    if (!text || !text.trim()) return;
+    const clean = text.trim();
+    const hash = hashClipboardText(clean);
+
+    // Prevent echoing back the item we just sent or received
+    if (hash === lastProcessedHashRef.current && clean === lastBroadcastedTextRef.current) {
+      return;
+    }
+
+    lastProcessedHashRef.current = hash;
+    lastBroadcastedTextRef.current = clean;
+
+    const item: SyncedClipboardItem = {
+      id: `clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      type: /^https?:\/\//i.test(clean) ? "link" : "text",
+      content: clean,
+      timestamp: Date.now(),
+      sourceDevice: getDeviceName(),
+      hash,
+      direction: "sent",
+      appliedToOs: true,
+    };
+
+    setLastClipboardSyncAt(Date.now());
+    setSyncedClipboard((prev) => {
+      const filtered = prev.filter((existing) => existing.hash !== hash);
+      return [item, ...filtered].slice(0, 25);
+    });
     sendDataChannelMessage({ type: "CLIPBOARD_SYNC", item });
-    toast({ title: "Sent to Connected Device", description: "Clipboard item broadcasted." });
-  }, [sendDataChannelMessage, toast]);
+  }, [sendDataChannelMessage]);
+
+  const applyPendingClipboard = useCallback(async (): Promise<boolean> => {
+    if (!pendingOsClipboardItem) return false;
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return false;
+    try {
+      await navigator.clipboard.writeText(pendingOsClipboardItem.content);
+      const targetId = pendingOsClipboardItem.id;
+      const preview = pendingOsClipboardItem.content;
+      setPendingOsClipboardItem(null);
+      setLatestRemoteClipboard((prev) => (prev && prev.id === targetId ? { ...prev, appliedToOs: true } : prev));
+      setSyncedClipboard((prev) =>
+        prev.map((entry) => (entry.id === targetId ? { ...entry, appliedToOs: true } : entry))
+      );
+      toast({
+        title: "Clipboard updated",
+        description: `${preview.length > 50 ? preview.slice(0, 50) + "..." : preview}`,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [pendingOsClipboardItem, toast]);
+
+  const dismissPendingClipboard = useCallback(() => {
+    setPendingOsClipboardItem(null);
+  }, []);
+
+  const syncLocalClipboardNow = useCallback(
+    async (origin: "copy" | "focus" | "poll" | "manual" = "manual"): Promise<boolean> => {
+      if (p2pState !== "connected") return false;
+
+      let candidateText = "";
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard?.readText && document.hasFocus()) {
+          candidateText = await navigator.clipboard.readText();
+          setClipboardPermissionState("granted");
+        }
+      } catch (err: any) {
+        if (origin === "manual" && err?.name === "NotAllowedError") {
+          setClipboardPermissionState("denied");
+        }
+      }
+
+      if (!candidateText && (origin === "copy" || origin === "manual")) {
+        candidateText = getSelectedTextFallback();
+      }
+
+      const clean = candidateText.trim();
+      if (!clean) return false;
+
+      const hash = hashClipboardText(clean);
+      if (hash === lastProcessedHashRef.current && clean === lastBroadcastedTextRef.current) {
+        return false;
+      }
+
+      sendClipboardText(clean);
+      if (origin === "focus") {
+        toast({
+          title: "Synced clipboard on tab return",
+          description: `${clean.length > 48 ? clean.slice(0, 48) + "..." : clean}`,
+        });
+      }
+      return true;
+    },
+    [p2pState, sendClipboardText, toast]
+  );
+
+  const requestClipboardPermission = useCallback(async (): Promise<boolean> => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+      setClipboardPermissionState("unsupported");
+      toast({
+        variant: "destructive",
+        title: "Clipboard Read Unsupported",
+        description: "In-app copies still sync automatically, or paste manually in the box.",
+      });
+      return false;
+    }
+
+    try {
+      const text = await navigator.clipboard.readText();
+      setClipboardPermissionState("granted");
+      if (text && text.trim() && p2pState === "connected") {
+        const clean = text.trim();
+        const hash = hashClipboardText(clean);
+        if (hash !== lastProcessedHashRef.current) {
+          sendClipboardText(clean);
+        }
+      }
+      toast({
+        title: "Auto-Clipboard Access Enabled",
+        description: "Copying in other apps will auto-sync when you switch back to Fileit.",
+      });
+      return true;
+    } catch {
+      setClipboardPermissionState("denied");
+      toast({
+        variant: "destructive",
+        title: "Clipboard Permission Blocked",
+        description: "Allow clipboard access in browser site settings, or paste directly into Fileit.",
+      });
+      return false;
+    }
+  }, [p2pState, sendClipboardText, toast]);
+
+  const pasteFromSystemClipboard = useCallback(async () => {
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+        toast({
+          variant: "destructive",
+          title: "Clipboard Access Limited",
+          description: "Use Ctrl+V / Cmd+V to paste directly into Fileit.",
+        });
+        return;
+      }
+      const text = await navigator.clipboard.readText();
+      setClipboardPermissionState("granted");
+      if (!text || !text.trim()) {
+        toast({ title: "Clipboard Empty", description: "No text found in system clipboard." });
+        return;
+      }
+      sendClipboardText(text);
+      toast({
+        title: "Clipboard Beamed",
+        description: `Shared "${text.length > 40 ? text.slice(0, 40) + "..." : text}" to paired device.`,
+      });
+    } catch {
+      toast({
+        title: "Click to Allow Clipboard",
+        description: "Browser requires permission to read system clipboard.",
+      });
+    }
+  }, [sendClipboardText, toast]);
+
+  // Auto-flush any pending remote clipboard write when returning to tab or on next interaction
+  useEffect(() => {
+    if (!pendingOsClipboardItem) return;
+
+    const flushSync = () => {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+      navigator.clipboard
+        .writeText(pendingOsClipboardItem.content)
+        .then(() => {
+          const targetId = pendingOsClipboardItem.id;
+          const preview = pendingOsClipboardItem.content;
+          setPendingOsClipboardItem(null);
+          setLatestRemoteClipboard((prev) => (prev && prev.id === targetId ? { ...prev, appliedToOs: true } : prev));
+          setSyncedClipboard((prev) =>
+            prev.map((entry) => (entry.id === targetId ? { ...entry, appliedToOs: true } : entry))
+          );
+          toast({
+            title: "Applied pending clipboard",
+            description: `${preview.length > 50 ? preview.slice(0, 50) + "..." : preview}`,
+          });
+        })
+        .catch(() => {});
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === "visible") {
+        setTimeout(flushSync, 40);
+      }
+    };
+
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("pointerdown", flushSync, { passive: true });
+    window.addEventListener("keydown", flushSync, { passive: true });
+
+    return () => {
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("pointerdown", flushSync);
+      window.removeEventListener("keydown", flushSync);
+    };
+  }, [pendingOsClipboardItem, toast]);
+
+  // Automatic bidirectional sync when site is open & on switching back to Fileit
+  useEffect(() => {
+    if (p2pState !== "connected" || !autoClipboardSync) return;
+
+    const handleDocumentCopyOrCut = () => {
+      // Immediate capture via selection fallback + async readText verification
+      const immediateSelection = getSelectedTextFallback();
+      if (immediateSelection && immediateSelection.trim()) {
+        const clean = immediateSelection.trim();
+        if (hashClipboardText(clean) !== lastProcessedHashRef.current) {
+          sendClipboardText(clean);
+        }
+      }
+      setTimeout(() => {
+        void syncLocalClipboardNow("copy");
+      }, 60);
+    };
+
+    const handleWindowReturn = () => {
+      if (document.visibilityState === "visible") {
+        setTimeout(() => {
+          void syncLocalClipboardNow("focus");
+        }, 80);
+      }
+    };
+
+    window.addEventListener("copy", handleDocumentCopyOrCut);
+    window.addEventListener("cut", handleDocumentCopyOrCut);
+    window.addEventListener("focus", handleWindowReturn);
+    document.addEventListener("visibilitychange", handleWindowReturn);
+
+    // Gentle focused polling when clipboard-read permission is already granted
+    let pollInterval: number | null = null;
+    if (clipboardPermissionState === "granted") {
+      pollInterval = window.setInterval(() => {
+        if (document.visibilityState === "visible" && document.hasFocus()) {
+          void syncLocalClipboardNow("poll");
+        }
+      }, 1500);
+    }
+
+    return () => {
+      window.removeEventListener("copy", handleDocumentCopyOrCut);
+      window.removeEventListener("cut", handleDocumentCopyOrCut);
+      window.removeEventListener("focus", handleWindowReturn);
+      document.removeEventListener("visibilitychange", handleWindowReturn);
+      if (pollInterval !== null) clearInterval(pollInterval);
+    };
+  }, [p2pState, autoClipboardSync, clipboardPermissionState, sendClipboardText, syncLocalClipboardNow]);
 
   const clearClipboard = useCallback(() => {
     setSyncedClipboard([]);
+    setLatestRemoteClipboard(null);
+    setPendingOsClipboardItem(null);
   }, []);
 
   // ── Vault Management & Bi-Directional Folder Sync ───────────────────────────
@@ -681,8 +1091,19 @@ export function P2PConnectionProvider({ children }: { children: React.ReactNode 
         sendDataChannelMessage,
 
         syncedClipboard,
+        latestRemoteClipboard,
+        pendingOsClipboardItem,
+        lastClipboardSyncAt,
+        clipboardPermissionState,
         sendClipboardText,
         clearClipboard,
+        autoClipboardSync,
+        setAutoClipboardSync,
+        pasteFromSystemClipboard,
+        syncLocalClipboardNow,
+        requestClipboardPermission,
+        applyPendingClipboard,
+        dismissPendingClipboard,
 
         remoteVaultFiles,
         localVaultFiles,

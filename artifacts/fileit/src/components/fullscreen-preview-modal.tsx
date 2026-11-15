@@ -26,13 +26,19 @@ import {
   Check,
   Info,
   Columns,
+  Search,
+  SlidersHorizontal,
+  ArrowLeftRight,
+  Folder,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { inspectFileType } from "@/lib/file-type-helpers";
 import { formatBytes } from "@/lib/utils";
-import { useDynamicBubble } from "@/components/dynamic-bubble-context";
+import { useDynamicBubble, MinimizedFile } from "@/components/dynamic-bubble-context";
 import { ExportShareModal } from "@/components/export-share-modal";
+import { useListFiles } from "@workspace/api-client-react";
 
 interface FullscreenPreviewModalProps {
   isOpen: boolean;
@@ -58,13 +64,21 @@ export function FullscreenPreviewModal({
   children,
 }: FullscreenPreviewModalProps) {
   const { toast } = useToast();
-  const { addMinimizedFile, splitScreenFile, setSplitScreenFile, addRecentFile, setActivePreviewFile } = useDynamicBubble();
+  const { addMinimizedFile, splitScreenFile, setSplitScreenFile, addRecentFile, setActivePreviewFile, recentFiles } = useDynamicBubble();
+  const { data: vaultFiles } = useListFiles();
   const [showControls, setShowControls] = useState(true);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [isNightMode, setIsNightMode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [customZoom, setCustomZoom] = useState(100);
   const [isExportShareOpen, setIsExportShareOpen] = useState(false);
+
+  // Adjustable Dual-Pane Split Screen States
+  const [splitRatio, setSplitRatio] = useState<number>(50); // percentage: 20 to 80
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+  const [isSplitPickerOpen, setIsSplitPickerOpen] = useState(false);
+  const [splitSearchQuery, setSplitSearchQuery] = useState("");
+  const splitContainerRef = useRef<HTMLDivElement | null>(null);
 
   const effectiveSize = size ?? fileSize;
   const effectiveDownloadUrl = downloadUrl ?? url;
@@ -102,6 +116,41 @@ export function FullscreenPreviewModal({
     setActivePreviewFile(null);
     onClose();
   }, [onClose, setActivePreviewFile]);
+
+  // Mouse / Touch drag listener for adjustable split divider
+  useEffect(() => {
+    if (!isDraggingSplit) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!splitContainerRef.current) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const rawPercent = ((e.clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(20, Math.min(80, Math.round(rawPercent)));
+      setSplitRatio(clamped);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!splitContainerRef.current || !e.touches[0]) return;
+      const rect = splitContainerRef.current.getBoundingClientRect();
+      const rawPercent = ((e.touches[0].clientX - rect.left) / rect.width) * 100;
+      const clamped = Math.max(20, Math.min(80, Math.round(rawPercent)));
+      setSplitRatio(clamped);
+    };
+
+    const handleDragEnd = () => setIsDraggingSplit(false);
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleDragEnd);
+    window.addEventListener("touchmove", handleTouchMove);
+    window.addEventListener("touchend", handleDragEnd);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleDragEnd);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleDragEnd);
+    };
+  }, [isDraggingSplit]);
 
   // Auto-hide controls after inactivity for true immersion
   const resetHideTimer = useCallback(() => {
@@ -269,47 +318,19 @@ export function FullscreenPreviewModal({
               <span className="hidden md:inline">{copiedLink ? "Copied" : "Share"}</span>
             </Button>
 
-            {/* Minimize to Dynamic Bubble */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                addMinimizedFile({
-                  id: Math.random().toString(36).substring(2, 9),
-                  name: fileName,
-                  type: fileName.endsWith(".pdf") ? "pdf" : fileName.match(/\.(docx|doc)$/) ? "docx" : "other",
-                  url,
-                  size,
-                });
-                toast({ title: "Minimized to Dynamic Bubble", description: `${fileName} stashed in top dynamic island.` });
-                handleClose();
-              }}
-              className="h-8 sm:h-9 px-2.5 sm:px-3 rounded-xl text-xs font-bold gap-1.5 shadow-xs border-border"
-              title="Minimize to Dynamic Bubble"
-            >
-              <Minimize2 className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">Minimize</span>
-            </Button>
 
             {/* Split Screen View */}
             <Button
               size="sm"
-              variant="outline"
+              variant={splitScreenFile ? "default" : "outline"}
               onClick={() => {
-                setSplitScreenFile({
-                  id: Math.random().toString(36).substring(2, 9),
-                  name: fileName,
-                  type: fileName.endsWith(".pdf") ? "pdf" : fileName.match(/\.(docx|doc)$/) ? "docx" : "other",
-                  url,
-                  size,
-                });
-                toast({ title: "Split-Screen Active", description: `${fileName} opened in split view.` });
+                setIsSplitPickerOpen(true);
               }}
               className="h-8 sm:h-9 px-2.5 sm:px-3 rounded-xl text-xs font-bold gap-1.5 shadow-xs border-border"
-              title="Split-Screen View"
+              title={splitScreenFile ? "Adjust or Switch Split View" : "Open Split-Screen Comparison"}
             >
               <Columns className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">Split Screen</span>
+              <span className="hidden lg:inline">{splitScreenFile ? "Split Active" : "Split Screen"}</span>
             </Button>
 
             {/* Download Button */}
@@ -343,44 +364,239 @@ export function FullscreenPreviewModal({
         </div>
       </header>
 
-      {/* ── Main Stage Canvas Area (Scrollable & Responsive) ── */}
+      {/* ── Main Stage Canvas Area (Adjustable Side-by-Side Dual Pane) ── */}
       <main
         id="fullscreen-canvas"
-        className="flex-1 w-full h-full overflow-auto flex items-center justify-center p-2 sm:p-6 pt-16 sm:pt-20 pb-16 sm:pb-20 relative z-10"
+        ref={splitContainerRef}
+        className="flex-1 w-full h-full overflow-hidden flex items-center justify-center p-2 sm:p-4 pt-16 sm:pt-20 pb-16 sm:pb-20 relative z-10"
       >
-        <div className={`w-full h-full max-w-7xl mx-auto grid ${splitScreenFile ? "grid-cols-1 md:grid-cols-2 gap-4" : "flex items-center justify-center"}`}>
-          <div className="w-full h-full flex items-center justify-center bg-card/60 backdrop-blur-md rounded-2xl border border-border p-2 overflow-auto shadow-sm">
-            {children}
-          </div>
-          {splitScreenFile && (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-card/60 backdrop-blur-md rounded-2xl border border-border p-4 relative overflow-auto shadow-sm">
-              <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
-                <span className="text-xs font-bold text-primary bg-primary/10 px-2.5 py-1 rounded-xl">Split View: {splitScreenFile.name}</span>
-                <Button size="icon" variant="ghost" onClick={() => setSplitScreenFile(null)} className="h-7 w-7 rounded-lg">
-                  <X className="w-3.5 h-3.5" />
-                </Button>
+        <div className="w-full h-full max-w-7xl mx-auto flex flex-col md:flex-row items-stretch overflow-hidden rounded-2xl border border-border bg-card/40 backdrop-blur-md shadow-2xl">
+          {/* Primary View Pane */}
+          <div
+            style={{ width: splitScreenFile ? `${splitRatio}%` : "100%" }}
+            className="h-full flex flex-col overflow-hidden transition-[width] duration-75 relative bg-card/60"
+          >
+            {splitScreenFile && (
+              <div className="flex items-center justify-between px-4 py-2 border-b border-border/80 bg-secondary/40 shrink-0 text-xs font-bold text-foreground">
+                <span className="truncate flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-primary" />
+                  <span className="truncate">{fileName}</span>
+                </span>
+                <span className="text-[10px] font-mono text-muted-foreground">{splitRatio}%</span>
               </div>
-              <div className="my-auto w-full h-full flex items-center justify-center pt-8">
+            )}
+            <div className="flex-1 w-full h-full flex items-center justify-center p-2 overflow-auto">
+              {children}
+            </div>
+          </div>
+
+          {/* Draggable Split Divider */}
+          {splitScreenFile && (
+            <div
+              onMouseDown={() => setIsDraggingSplit(true)}
+              onTouchStart={() => setIsDraggingSplit(true)}
+              className="w-3 md:w-3.5 h-4 md:h-full cursor-col-resize bg-border hover:bg-primary/50 active:bg-primary transition-colors flex items-center justify-center shrink-0 select-none group relative z-30"
+              title="Drag to resize split panes (Double click to reset 50/50)"
+              onDoubleClick={() => setSplitRatio(50)}
+            >
+              <div className="w-1 h-8 rounded-full bg-muted-foreground/60 group-hover:bg-primary transition-colors" />
+            </div>
+          )}
+
+          {/* Secondary Split Pane */}
+          {splitScreenFile && (
+            <div
+              style={{ width: `${100 - splitRatio}%` }}
+              className="h-full flex flex-col overflow-hidden transition-[width] duration-75 relative bg-card/80 border-t md:border-t-0 md:border-l border-border"
+            >
+              {/* Secondary Pane Header */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border/80 bg-secondary/50 shrink-0 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[10px] font-mono font-bold text-primary bg-primary/10 px-2 py-0.5 rounded-md shrink-0">
+                    Split View
+                  </span>
+                  <span className="font-bold text-foreground truncate">{splitScreenFile.name}</span>
+                </div>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  {/* Ratio Presets */}
+                  <div className="hidden sm:flex items-center gap-0.5 bg-background/60 p-0.5 rounded-lg border border-border/60">
+                    <button
+                      type="button"
+                      onClick={() => setSplitRatio(33)}
+                      className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded ${splitRatio === 33 ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      title="1:2 Ratio (33% / 67%)"
+                    >
+                      1:2
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSplitRatio(50)}
+                      className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded ${splitRatio === 50 ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      title="1:1 Ratio (50% / 50%)"
+                    >
+                      1:1
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSplitRatio(67)}
+                      className={`px-1.5 py-0.5 text-[9px] font-mono font-bold rounded ${splitRatio === 67 ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      title="2:1 Ratio (67% / 33%)"
+                    >
+                      2:1
+                    </button>
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setIsSplitPickerOpen(true)}
+                    className="h-6 px-2 text-[10px] font-semibold text-muted-foreground hover:text-foreground"
+                    title="Change Document"
+                  >
+                    <ArrowLeftRight className="w-3 h-3 mr-1" />
+                    <span>Switch</span>
+                  </Button>
+
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setSplitScreenFile(null)}
+                    className="h-6 w-6 rounded-lg text-muted-foreground hover:text-destructive"
+                    title="Close Split View"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Secondary Pane Content */}
+              <div className="flex-1 w-full h-full flex items-center justify-center p-2 overflow-auto">
                 {splitScreenFile.url ? (
                   splitScreenFile.type === "pdf" ? (
-                    <iframe src={splitScreenFile.url} className="w-full h-full min-h-[400px] rounded-xl border border-border" title={splitScreenFile.name} />
+                    <iframe
+                      src={splitScreenFile.url}
+                      className="w-full h-full min-h-[400px] rounded-xl border border-border"
+                      title={splitScreenFile.name}
+                    />
+                  ) : splitScreenFile.type === "image" ? (
+                    <img
+                      src={splitScreenFile.url}
+                      alt={splitScreenFile.name}
+                      className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                    />
                   ) : (
                     <div className="text-center space-y-3 p-6">
                       <FileText className="w-12 h-12 text-primary mx-auto" />
                       <p className="text-sm font-bold text-foreground">{splitScreenFile.name}</p>
+                      {splitScreenFile.size ? (
+                        <p className="text-xs font-mono text-muted-foreground">{formatBytes(splitScreenFile.size)}</p>
+                      ) : null}
                       <Button asChild size="sm">
-                        <a href={splitScreenFile.url} download={splitScreenFile.name}>Download</a>
+                        <a href={splitScreenFile.url} download={splitScreenFile.name}>
+                          <Download className="w-3.5 h-3.5 mr-1.5" />
+                          Download
+                        </a>
                       </Button>
                     </div>
                   )
                 ) : (
-                  <p className="text-xs text-muted-foreground">Split view file loaded</p>
+                  <p className="text-xs text-muted-foreground">Split view loaded</p>
                 )}
               </div>
             </div>
           )}
         </div>
       </main>
+
+      {/* Split Screen File Picker Modal */}
+      {isSplitPickerOpen && (
+        <div
+          className="fixed inset-0 z-[120000] bg-black/60 backdrop-blur-md flex items-center justify-center p-4"
+          onClick={() => setIsSplitPickerOpen(false)}
+        >
+          <div
+            className="bg-card text-card-foreground border border-border p-6 rounded-3xl max-w-md w-full space-y-4 shadow-2xl animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border/80 pb-3">
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-foreground flex items-center gap-2">
+                  <Columns className="w-4 h-4 text-primary" />
+                  <span>Choose File for Split-Screen</span>
+                </h3>
+                <p className="text-xs text-muted-foreground">Select a file to compare side-by-side</p>
+              </div>
+              <Button size="icon" variant="ghost" onClick={() => setIsSplitPickerOpen(false)} className="h-7 w-7 rounded-lg">
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <div className="relative">
+              <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-2.5" />
+              <Input
+                value={splitSearchQuery}
+                onChange={(e) => setSplitSearchQuery(e.target.value)}
+                placeholder="Search vault or recent files..."
+                className="pl-9 h-9 rounded-xl text-xs"
+              />
+            </div>
+
+            <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+              {vaultFiles && vaultFiles.length > 0 ? (
+                vaultFiles
+                  .filter((f) => f.originalName !== fileName && (!splitSearchQuery || f.originalName.toLowerCase().includes(splitSearchQuery.toLowerCase())))
+                  .map((vf) => (
+                    <div
+                      key={vf.id}
+                      onClick={() => {
+                        const mType = vf.originalName.endsWith(".pdf") ? "pdf" : vf.originalName.match(/\.(docx|doc)$/) ? "docx" : vf.mimeType?.startsWith("image/") ? "image" : "other";
+                        setSplitScreenFile({
+                          id: vf.id,
+                          name: vf.originalName,
+                          type: mType,
+                          url: `/api/files/${vf.id}/download`,
+                          size: vf.size,
+                        });
+                        setIsSplitPickerOpen(false);
+                        toast({ title: "Split View Opened", description: `Comparing against ${vf.originalName}` });
+                      }}
+                      className="flex items-center justify-between p-2.5 rounded-xl hover:bg-secondary cursor-pointer text-xs border border-transparent hover:border-border transition-colors group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <FileText className="w-4 h-4 text-primary shrink-0" />
+                        <span className="font-semibold text-foreground truncate group-hover:text-primary">{vf.originalName}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-muted-foreground shrink-0">{formatBytes(vf.size)}</span>
+                    </div>
+                  ))
+              ) : recentFiles.length > 0 ? (
+                recentFiles
+                  .filter((rf) => rf.name !== fileName && (!splitSearchQuery || rf.name.toLowerCase().includes(splitSearchQuery.toLowerCase())))
+                  .map((rf) => (
+                    <div
+                      key={rf.id}
+                      onClick={() => {
+                        setSplitScreenFile(rf);
+                        setIsSplitPickerOpen(false);
+                        toast({ title: "Split View Opened", description: `Comparing against ${rf.name}` });
+                      }}
+                      className="flex items-center justify-between p-2.5 rounded-xl hover:bg-secondary cursor-pointer text-xs border border-transparent hover:border-border transition-colors group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <FileText className="w-4 h-4 text-primary shrink-0" />
+                        <span className="font-semibold text-foreground truncate group-hover:text-primary">{rf.name}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-muted-foreground shrink-0">Recent</span>
+                    </div>
+                  ))
+              ) : (
+                <p className="text-center py-6 text-xs text-muted-foreground">No other files available in vault.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Bottom Floating Dock Action Toolbar ── */}
       <footer

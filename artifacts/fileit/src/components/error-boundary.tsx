@@ -1,106 +1,91 @@
-import {
-  Component,
-  type ComponentType,
-  type ErrorInfo,
-  type ReactNode,
-} from 'react';
-
-export interface ErrorFallbackProps {
-  error: Error;
-  resetError: () => void;
-}
-
-interface ErrorBoundaryProps {
-  children: ReactNode;
-  FallbackComponent?: ComponentType<ErrorFallbackProps>;
-  /** Changing this clears a caught error. Pass the route to recover on navigation. */
-  resetKey?: unknown;
-}
+import React from "react";
+import { RotateCcw, AlertTriangle } from "lucide-react";
 
 interface ErrorBoundaryState {
+  hasError: boolean;
   error: Error | null;
 }
 
-function toError(value: unknown): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    return new Error(value);
-  }
-  try {
-    return new Error(JSON.stringify(value));
-  } catch {
-    return new Error(String(value));
-  }
-}
-
-function DefaultFallback({ error, resetError }: ErrorFallbackProps) {
-  return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-50 p-6">
-      <div className="max-w-lg w-full text-center">
-        <h1 className="text-xl font-semibold text-gray-900">
-          Something went wrong
-        </h1>
-        <p className="mt-2 text-sm text-gray-600">
-          This part of the app hit an error. The rest of the app is still
-          running.
-        </p>
-        {/* Dev only: messages can carry API responses and other internals. */}
-        {import.meta.env.DEV ? (
-          <pre className="mt-4 overflow-x-auto rounded bg-gray-100 p-3 text-left text-xs text-gray-800">
-            {error.message || String(error)}
-          </pre>
-        ) : null}
-        <button
-          type="button"
-          onClick={resetError}
-          className="mt-4 rounded bg-gray-900 px-4 py-2 text-sm text-white hover:bg-gray-700"
-        >
-          Try again
-        </button>
-      </div>
-    </div>
-  );
-}
-
-export class ErrorBoundary extends Component<
-  ErrorBoundaryProps,
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
   ErrorBoundaryState
 > {
-  state: ErrorBoundaryState = { error: null };
-
-  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
-    return { error: toError(error) };
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
   }
 
-  componentDidCatch(error: unknown, info: ErrorInfo): void {
-    console.error(
-      'ErrorBoundary caught an error:',
-      toError(error),
-      info.componentStack,
-    );
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
   }
 
-  componentDidUpdate(prevProps: ErrorBoundaryProps): void {
-    if (
-      this.state.error !== null &&
-      prevProps.resetKey !== this.props.resetKey
-    ) {
-      this.resetError();
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("Application render error:", error, errorInfo);
+  }
+
+  handleReload = () => {
+    try {
+      window.location.reload();
+    } catch {
+      this.setState({ hasError: false, error: null });
     }
-  }
-
-  resetError = (): void => {
-    this.setState({ error: null });
   };
 
-  render(): ReactNode {
-    const { error } = this.state;
-    if (error === null) {
-      return this.props.children;
+  handleResetAndReload = () => {
+    try {
+      localStorage.removeItem("fileit_island_minimized_line");
+      localStorage.removeItem("fileit_active_room_session");
+    } catch {}
+    this.handleReload();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-[100dvh] bg-background text-foreground flex items-center justify-center p-6">
+          <div className="max-w-md w-full rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-destructive/10 text-destructive flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h1 className="text-base font-semibold text-foreground">
+                  Something went wrong
+                </h1>
+                <p className="text-xs text-muted-foreground">
+                  Fileit encountered a rendering issue.
+                </p>
+              </div>
+            </div>
+
+            {this.state.error?.message && (
+              <pre className="text-xs font-mono bg-muted/60 border border-border/70 rounded-lg p-3 text-muted-foreground overflow-x-auto whitespace-pre-wrap break-words">
+                {this.state.error.message}
+              </pre>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={this.handleReload}
+                className="flex-1 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-primary/90 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reload</span>
+              </button>
+              <button
+                type="button"
+                onClick={this.handleResetAndReload}
+                className="h-9 px-3 rounded-lg border border-border bg-background text-foreground text-xs font-medium hover:bg-secondary transition-colors cursor-pointer"
+              >
+                Reset Session
+              </button>
+            </div>
+          </div>
+        </div>
+      );
     }
-    const Fallback = this.props.FallbackComponent ?? DefaultFallback;
-    return <Fallback error={error} resetError={this.resetError} />;
+
+    return this.props.children;
   }
 }
