@@ -1,6 +1,6 @@
-import app from "./app";
-import { logger } from "./lib/logger";
-import { cleanupExpiredFilesAndFolders } from "./cleanup";
+import app from "./app.js";
+import { logger } from "./lib/logger.js";
+import { cleanupExpiredFilesAndFolders } from "./cleanup.js";
 
 export default app;
 
@@ -20,7 +20,7 @@ if (!process.env.VERCEL) {
     // Run cleanup every hour safely on persistent deployments.
     const cleanupInterval = setInterval(() => {
       logger.info("Running cleanup for expired files and folders...");
-      cleanupExpiredFilesAndFolders().catch((err) => {
+      cleanupExpiredFilesAndFolders().catch((err: unknown) => {
         logger.error({ err }, "Periodic cleanup error");
       });
     }, 60 * 60 * 1000);
